@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template_string, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory
 import os
 import cv2
 import numpy as np
@@ -8,8 +8,12 @@ import base64
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
-DATASET_DIR = "dataset"
-EMBEDDINGS_FILE = "embeddings.pkl"
+# --------------------------
+# Render writable directory setup
+# --------------------------
+BASE_DIR = '/tmp' if os.environ.get("RENDER") else '.'
+DATASET_DIR = os.path.join(BASE_DIR, "dataset")
+EMBEDDINGS_FILE = os.path.join(BASE_DIR, "embeddings.pkl")
 os.makedirs(DATASET_DIR, exist_ok=True)
 
 # --------------------------
@@ -135,13 +139,11 @@ def list_users():
 # --------------------------
 @app.route("/")
 def home():
-    return send_from_directory(".", "index.html")
+    return send_from_directory(os.path.dirname(__file__), "index.html")
 
 # --------------------------
 # Run Flask
 # --------------------------
 if __name__ == "__main__":
-    import os
     port = int(os.environ.get("PORT", 5000))
-    # debug=False for production
     app.run(host="0.0.0.0", port=port, debug=False)
