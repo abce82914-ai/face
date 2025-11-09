@@ -47,31 +47,39 @@ def register_images():
     data = request.json
     name = data.get("name")
     imgs = data.get("images", [])
+
     if not name or not imgs:
         return jsonify({"status": "error", "message": "Invalid data"})
 
     user_dir = os.path.join(DATASET_DIR, name)
     os.makedirs(user_dir, exist_ok=True)
 
+    print(f"[INFO] Registering {name} with {len(imgs)} images")
+
+    reps = []
     for i, img_data in enumerate(imgs):
         img = decode_image(img_data)
-        cv2.imwrite(os.path.join(user_dir, f"{i}.jpg"), img)
-
-    # Compute embeddings
-    reps = []
-    for img_data in imgs:
-        img = decode_image(img_data)
+        img_path = os.path.join(user_dir, f"{i}.jpg")
+        cv2.imwrite(img_path, img)
         try:
-            emb = DeepFace.represent(img, model_name='Facenet', enforce_detection=False)[0]["embedding"]
-            reps.append(emb)
+            rep = DeepFace.represent(
+                img_path,  # ✅ use path for better stability
+                model_name="Facenet",
+                detector_backend="retinaface",  # more accurate than opencv
+                enforce_detection=False
+            )[0]["embedding"]
+            reps.append(rep)
         except Exception as e:
-            print("Embedding error:", e)
+            print(f"[ERROR] Embedding failed for image {i}: {e}")
+
     if reps:
         embeddings[name] = np.mean(reps, axis=0)
         save_embeddings(embeddings)
+        print(f"[OK] {name} registered successfully with {len(reps)} embeddings")
         return jsonify({"status": "ok", "message": f"User '{name}' registered successfully."})
     else:
-        return jsonify({"status": "error", "message": "No face detected"})
+        print("[FAIL] No valid embeddings generated.")
+        return jsonify({"status": "error", "message": "Registration failed: no valid faces detected"})
 
 # --------------------------
 # Recognize route
@@ -84,32 +92,34 @@ def recognize_image():
         return jsonify({"status": "error", "message": "No image data"})
 
     frame = decode_image(img_data)
-    bbox, name, dist = None, "Unknown", 0.0
-
     try:
-        detections = DeepFace.extract_faces(frame, detector_backend='opencv', enforce_detection=False)
-        if detections:
-            d = detections[0]
-            x, y, w, h = d['facial_area'].values()
-            bbox = [x, y, w, h]
-            emb = DeepFace.represent(frame, model_name='Facenet', enforce_detection=False)[0]["embedding"]
+        detected = DeepFace.extract_faces(frame, detector_backend='retinaface', enforce_detection=False)
+        if not detected:
+            return jsonify({"status": "ok", "bbox": None, "name": "No face", "distance": 0})
 
-            # Compare with stored embeddings
-            min_dist, matched_name = 999, "Unknown"
-            for uname, uemb in embeddings.items():
-                dist = np.linalg.norm(uemb - emb)
-                if dist < min_dist:
-                    min_dist = dist
-                    matched_name = uname
-            if min_dist < 10:  # adjustable threshold
-                name = matched_name
-                dist = min_dist
+        d = detected[0]
+        x, y, w, h = d['facial_area'].values()
+        emb = DeepFace.represent(frame, model_name="Facenet", enforce_detection=False)[0]["embedding"]
+
+        min_dist, matched_name = 999, "Unknown"
+        for uname, uemb in embeddings.items():
+            dist = np.linalg.norm(uemb - emb)
+            if dist < min_dist:
+                min_dist = dist
+                matched_name = uname
+
+        threshold = 10  # tweak if needed
+        if min_dist < threshold:
+            print(f"[MATCH] {matched_name} ({min_dist:.3f})")
+            return jsonify({"status": "ok", "bbox": [x, y, w, h], "name": matched_name, "distance": float(min_dist),
+                             "img_w": frame.shape[1], "img_h": frame.shape[0]})
+        else:
+            print(f"[NO MATCH] Closest {matched_name} ({min_dist:.3f})")
+            return jsonify({"status": "ok", "bbox": [x, y, w, h], "name": "Unknown", "distance": float(min_dist),
+                             "img_w": frame.shape[1], "img_h": frame.shape[0]})
     except Exception as e:
-        print("Recognition error:", e)
-
-    h, w = frame.shape[:2]
-    return jsonify({"status": "ok", "bbox": bbox, "name": name, "distance": dist, "img_w": w, "img_h": h})
-
+        print("[ERROR] Recognition:", e)
+        return jsonify({"status": "error", "message": str(e)})
 # --------------------------
 # Delete User
 # --------------------------
@@ -147,3 +157,4 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
+
